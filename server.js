@@ -1,63 +1,69 @@
 const express = require('express');
+const axios = require('axios');
 const cors = require('cors');
-const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
-
-// Middleware
-app.use(cors({
-    origin: process.env.FRONTEND_URL || 'https://app.freeclipping.com', // Jo origin logs mein hai
-    credentials: true
-}));
+app.use(cors());
 app.use(express.json());
 
-// JWT Authentication Middleware (Token check karne ke liye)
-const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
-
-    if (!token) return res.status(401).json({ message: 'Access Token Missing' });
-
-    // Agar real JWT verify karna ho to secret key use karein. 
-    // Testing/Mocking ke liye aap isey bypass ya decode bhi kar sakte hain.
-    jwt.verify(token, process.env.JWT_SECRET || 'your_temporary_secret', (err, user) => {
-        if (err) return res.status(403).json({ message: 'Invalid or Expired Token' });
-        req.user = user;
-        next();
-    });
-};
-
-// 1. GET: Fetch User Socials
-app.get('/api/user/socials', authenticateToken, (req, res) => {
-    // Mock Data jo user ko return hona hai
-    const mockSocials = [
-        { id: 8165, platform: 'Facebook', status: 'pending' },
-        { id: 8166, platform: 'Twitter', status: 'verified' }
-    ];
-    
-    // ETag header set karna Express khud handle kar leta hai jo 304 status deta hai
-    res.json(mockSocials);
+const BASE_URL = 'https://app.freeclipping.com/api/user';
+const getHeaders = () => ({
+  'accept': '*/*',
+  'authorization': `Bearer ${process.env.WEBSITE_A_TOKEN}`,
+  'content-type': 'application/json',
+  'origin': 'https://app.freeclipping.com',
+  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36'
 });
 
-// 2. POST: Verify Specific Social Account
-app.post('/api/user/socials/:id/verify', authenticateToken, (req, res) => {
-    const socialId = req.params.id;
-
-    // Logs ke mutabiq response length 116 bytes ke aas paas hai, toh data structure aisa ho sakta hai:
-    res.status(200).json({
-        success: true,
-        message: `Social account with ID ${socialId} verified successfully.`,
-        verifiedAt: new Date().toISOString()
-    });
+// 1. SUBMIT HANDLE ROUTE
+app.post('/api/submit-handle', async (req, res) => {
+    try {
+        console.log(`[KHR] Submitting handle to Website A: ${req.body.username}`);
+        const response = await axios.post(`${BASE_URL}/socials`, {
+            platform: "YouTube",
+            username: req.body.username
+        }, { headers: getHeaders() });
+        
+        res.status(200).json(response.data); 
+    } catch (error) {
+        console.error('[KHR Error] Submit Handle Fail:', error.response?.data || error.message);
+        
+        // Agar Website A koi error response deti hai (jaise channel already linked), toh use frontend ko forward karein
+        if (error.response) {
+            return res.status(error.response.status).json(error.response.data);
+        }
+        res.status(500).json({ error: 'Handle submit fail ho gaya backend par' });
+    }
 });
 
-// Root Route for Health Check
-app.get('/', (req, res) => {
-    res.send('Website A Backend Server is running perfectly!');
+// 2. VERIFY HANDLE ROUTE
+app.post('/api/verify-handle', async (req, res) => {
+    try {
+        console.log(`[KHR] Verifying website_a_id: ${req.body.website_a_id}`);
+        const response = await axios.post(`${BASE_URL}/socials/${req.body.website_a_id}/verify`, {}, { 
+            headers: getHeaders() 
+        });
+        
+        res.status(200).json(response.data);
+    } catch (error) {
+        console.error('[KHR Error] Verify Handle Fail:', error.response?.data || error.message);
+        
+        // CRITICAL FIX: Website A jab verification fail karti hai toh 400 status bhejti hai.
+        // Agar hum yahan se 500 bhejenge toh frontend ka res.ok false ho jayega aur custom alert block chalega.
+        // Isliye hum status 200 ke sath success: false aur live exact error message bhejenge jo Website A ne diya hai.
+        if (error.response) {
+            const liveApiError = error.response.data?.message || error.response.data?.error || 'Verification failed on Website A';
+            return res.status(200).json({ 
+                success: false, 
+                verified: false, 
+                error: liveApiError 
+            });
+        }
+        res.status(500).json({ success: false, verified: false, error: 'Verify fail ho gaya backend par' });
+    }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+module.exports = app;
