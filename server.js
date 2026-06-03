@@ -1,118 +1,63 @@
 const express = require('express');
-const axios = require('axios');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
+const PORT = process.env.PORT || 5000;
+
+// Middleware
+app.use(cors({
+    origin: process.env.FRONTEND_URL || 'https://app.freeclipping.com', // Jo origin logs mein hai
+    credentials: true
+}));
 app.use(express.json());
 
-const BASE_URL = 'https://app.freeclipping.com/api/user';
-const getHeaders = () => ({
-  'accept': '*/*',
-  'authorization': `Bearer ${process.env.WEBSITE_A_TOKEN}`,
-  'content-type': 'application/json',
-  'origin': 'https://app.freeclipping.com',
-  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36'
+// JWT Authentication Middleware (Token check karne ke liye)
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+
+    if (!token) return res.status(401).json({ message: 'Access Token Missing' });
+
+    // Agar real JWT verify karna ho to secret key use karein. 
+    // Testing/Mocking ke liye aap isey bypass ya decode bhi kar sakte hain.
+    jwt.verify(token, process.env.JWT_SECRET || 'your_temporary_secret', (err, user) => {
+        if (err) return res.status(403).json({ message: 'Invalid or Expired Token' });
+        req.user = user;
+        next();
+    });
+};
+
+// 1. GET: Fetch User Socials
+app.get('/api/user/socials', authenticateToken, (req, res) => {
+    // Mock Data jo user ko return hona hai
+    const mockSocials = [
+        { id: 8165, platform: 'Facebook', status: 'pending' },
+        { id: 8166, platform: 'Twitter', status: 'verified' }
+    ];
+    
+    // ETag header set karna Express khud handle kar leta hai jo 304 status deta hai
+    res.json(mockSocials);
 });
 
-// 1. SUBMIT HANDLE ROUTE (WITH AUTOMATIC UNIQUE CODE EXTRACTION)
-app.post('/api/submit-handle', async (req, res) => {
-    try {
-        const submittedHandle = req.body.username ? req.body.username.toLowerCase().trim() : '';
-        console.log(`[KHR] Submitting handle to Website A Master Account: ${submittedHandle}`);
-        
-        const response = await axios.post(`${BASE_URL}/socials`, {
-            platform: "YouTube",
-            username: req.body.username
-        }, { headers: getHeaders() });
-        
-        let responseData = response.data;
-        let matchedSocial = null;
-        
-        // FOOLPROOF RECURSIVE SEARCH: Response mein jahan bhi handle match hoga, yeh use dhoond nikalega
-        function findSpecificHandle(obj) {
-            if (!obj || typeof obj !== 'object') return;
-            
-            if (Array.isArray(obj)) {
-                for (let item of obj) {
-                    if (item && typeof item === 'object') {
-                        const currentName = (item.username || item.handle || item.youtube_handle || '').toLowerCase().trim();
-                        if (currentName === submittedHandle) {
-                            matchedSocial = item;
-                            return;
-                        }
-                        findSpecificHandle(item);
-                    }
-                }
-            } else {
-                const currentName = (obj.username || obj.handle || obj.youtube_handle || '').toLowerCase().trim();
-                if (currentName === submittedHandle && (obj.id || obj.verification_code || obj.code || obj.verification_string)) {
-                    matchedSocial = obj;
-                    return;
-                }
-                for (let key in obj) {
-                    if (Object.prototype.hasOwnProperty.call(obj, key) && typeof obj[key] === 'object') {
-                        findSpecificHandle(obj[key]);
-                        if (matchedSocial) return;
-                    }
-                }
-            }
-        }
-        
-        // Search execution
-        findSpecificHandle(responseData);
-        
-        // Agar specific handle ka unique data mil gaya, toh use root par overwrite karein taaki App.tsx sahi read kare
-        if (matchedSocial) {
-            console.log(`[KHR] Successfully matched unique data for handle: ${submittedHandle}`);
-            const uniqueId = matchedSocial.id;
-            const uniqueCode = matchedSocial.verification_code || matchedSocial.code || matchedSocial.verification_string || matchedSocial.verificationCode;
-            
-            if (uniqueId) responseData.id = uniqueId;
-            if (uniqueCode) {
-                responseData.verification_string = uniqueCode;
-                responseData.code = uniqueCode;
-                responseData.verification_code = uniqueCode;
-                responseData.verificationCode = uniqueCode;
-            }
-        }
-        
-        res.status(200).json(responseData); 
-    } catch (error) {
-        console.error('[KHR Error] Submit Handle Fail:', error.response?.data || error.message);
-        if (error.response) {
-            return res.status(error.response.status).json(error.response.data);
-        }
-        res.status(500).json({ error: 'Handle submit fail ho gaya' });
-    }
+// 2. POST: Verify Specific Social Account
+app.post('/api/user/socials/:id/verify', authenticateToken, (req, res) => {
+    const socialId = req.params.id;
+
+    // Logs ke mutabiq response length 116 bytes ke aas paas hai, toh data structure aisa ho sakta hai:
+    res.status(200).json({
+        success: true,
+        message: `Social account with ID ${socialId} verified successfully.`,
+        verifiedAt: new Date().toISOString()
+    });
 });
 
-// 2. VERIFY HANDLE ROUTE
-app.post('/api/verify-handle', async (req, res) => {
-    try {
-        console.log(`[KHR] Verifying specific channel ID: ${req.body.website_a_id}`);
-        const response = await axios.post(`${BASE_URL}/socials/${req.body.website_a_id}/verify`, {}, { 
-            headers: getHeaders() 
-        });
-        
-        res.status(200).json(response.data);
-    } catch (error) {
-        console.error('[KHR Error] Verify Handle Fail:', error.response?.data || error.message);
-        
-        // Live verification status check code mapping
-        if (error.response) {
-            const liveApiError = error.response.data?.message || error.response.data?.error || 'Verification failed on Website A';
-            return res.status(200).json({ 
-                success: false, 
-                verified: false, 
-                error: liveApiError 
-            });
-        }
-        res.status(500).json({ success: false, verified: false, error: 'Verify fail ho gaya' });
-    }
+// Root Route for Health Check
+app.get('/', (req, res) => {
+    res.send('Website A Backend Server is running perfectly!');
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-module.exports = app;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
