@@ -16,31 +16,82 @@ const getHeaders = () => ({
   'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36'
 });
 
-// 1. SUBMIT HANDLE ROUTE
+// 1. SUBMIT HANDLE ROUTE (WITH AUTOMATIC UNIQUE CODE EXTRACTION)
 app.post('/api/submit-handle', async (req, res) => {
     try {
-        console.log(`[KHR] Submitting handle to Website A: ${req.body.username}`);
+        const submittedHandle = req.body.username ? req.body.username.toLowerCase().trim() : '';
+        console.log(`[KHR] Submitting handle to Website A Master Account: ${submittedHandle}`);
+        
         const response = await axios.post(`${BASE_URL}/socials`, {
             platform: "YouTube",
             username: req.body.username
         }, { headers: getHeaders() });
         
-        res.status(200).json(response.data); 
+        let responseData = response.data;
+        let matchedSocial = null;
+        
+        // FOOLPROOF RECURSIVE SEARCH: Response mein jahan bhi handle match hoga, yeh use dhoond nikalega
+        function findSpecificHandle(obj) {
+            if (!obj || typeof obj !== 'object') return;
+            
+            if (Array.isArray(obj)) {
+                for (let item of obj) {
+                    if (item && typeof item === 'object') {
+                        const currentName = (item.username || item.handle || item.youtube_handle || '').toLowerCase().trim();
+                        if (currentName === submittedHandle) {
+                            matchedSocial = item;
+                            return;
+                        }
+                        findSpecificHandle(item);
+                    }
+                }
+            } else {
+                const currentName = (obj.username || obj.handle || obj.youtube_handle || '').toLowerCase().trim();
+                if (currentName === submittedHandle && (obj.id || obj.verification_code || obj.code || obj.verification_string)) {
+                    matchedSocial = obj;
+                    return;
+                }
+                for (let key in obj) {
+                    if (Object.prototype.hasOwnProperty.call(obj, key) && typeof obj[key] === 'object') {
+                        findSpecificHandle(obj[key]);
+                        if (matchedSocial) return;
+                    }
+                }
+            }
+        }
+        
+        // Search execution
+        findSpecificHandle(responseData);
+        
+        // Agar specific handle ka unique data mil gaya, toh use root par overwrite karein taaki App.tsx sahi read kare
+        if (matchedSocial) {
+            console.log(`[KHR] Successfully matched unique data for handle: ${submittedHandle}`);
+            const uniqueId = matchedSocial.id;
+            const uniqueCode = matchedSocial.verification_code || matchedSocial.code || matchedSocial.verification_string || matchedSocial.verificationCode;
+            
+            if (uniqueId) responseData.id = uniqueId;
+            if (uniqueCode) {
+                responseData.verification_string = uniqueCode;
+                responseData.code = uniqueCode;
+                responseData.verification_code = uniqueCode;
+                responseData.verificationCode = uniqueCode;
+            }
+        }
+        
+        res.status(200).json(responseData); 
     } catch (error) {
         console.error('[KHR Error] Submit Handle Fail:', error.response?.data || error.message);
-        
-        // Agar Website A koi error response deti hai (jaise channel already linked), toh use frontend ko forward karein
         if (error.response) {
             return res.status(error.response.status).json(error.response.data);
         }
-        res.status(500).json({ error: 'Handle submit fail ho gaya backend par' });
+        res.status(500).json({ error: 'Handle submit fail ho gaya' });
     }
 });
 
 // 2. VERIFY HANDLE ROUTE
 app.post('/api/verify-handle', async (req, res) => {
     try {
-        console.log(`[KHR] Verifying website_a_id: ${req.body.website_a_id}`);
+        console.log(`[KHR] Verifying specific channel ID: ${req.body.website_a_id}`);
         const response = await axios.post(`${BASE_URL}/socials/${req.body.website_a_id}/verify`, {}, { 
             headers: getHeaders() 
         });
@@ -49,9 +100,7 @@ app.post('/api/verify-handle', async (req, res) => {
     } catch (error) {
         console.error('[KHR Error] Verify Handle Fail:', error.response?.data || error.message);
         
-        // CRITICAL FIX: Website A jab verification fail karti hai toh 400 status bhejti hai.
-        // Agar hum yahan se 500 bhejenge toh frontend ka res.ok false ho jayega aur custom alert block chalega.
-        // Isliye hum status 200 ke sath success: false aur live exact error message bhejenge jo Website A ne diya hai.
+        // Live verification status check code mapping
         if (error.response) {
             const liveApiError = error.response.data?.message || error.response.data?.error || 'Verification failed on Website A';
             return res.status(200).json({ 
@@ -60,7 +109,7 @@ app.post('/api/verify-handle', async (req, res) => {
                 error: liveApiError 
             });
         }
-        res.status(500).json({ success: false, verified: false, error: 'Verify fail ho gaya backend par' });
+        res.status(500).json({ success: false, verified: false, error: 'Verify fail ho gaya' });
     }
 });
 
